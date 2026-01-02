@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"log/slog"
-	"os"
 
 	base "github.com/Alliance-Community/bots-base"
 
@@ -14,27 +13,30 @@ import (
 	"github.com/prbf2-tools/prism-bot/internal/bot/details"
 	"github.com/prbf2-tools/prism-bot/internal/config"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-var configFilePath string
+var configFilePath = flag.String("config", "config.yaml", "Path to the configuration file")
+var certPath = flag.String("cert", "", "path to TLS certificate")
+var proxyAddr = flag.String("proxy", "localhost:50051", "address of the proxy server")
+var hostnameOverride = flag.String("hostname-override", "", "override the hostname for TLS verification")
 
 func main() {
-	flag.StringVar(&configFilePath, "config", "config.yaml", "Path to the configuration file")
 	flag.Parse()
 
-	if err := run(os.Args[1:]); err != nil {
+	if err := run(); err != nil {
 		panic(err)
 	}
 }
 
-func run(_ []string) error {
+func run() error {
 	discordConfig, err := base.GetConfigFromEnv("PRISM_BOT")
 	if err != nil {
 		return err
 	}
 
-	conf, err := config.NewConfig(configFilePath)
+	conf, err := config.NewConfig(*configFilePath)
 	if err != nil {
 		return err
 	}
@@ -48,7 +50,16 @@ func run(_ []string) error {
 		return err
 	}
 
-	conn, err := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	dialOption := grpc.WithTransportCredentials(insecure.NewCredentials())
+	if *certPath != "" {
+		creds, err := credentials.NewClientTLSFromFile(*certPath, *hostnameOverride)
+		if err != nil {
+			return err
+		}
+		dialOption = grpc.WithTransportCredentials(creds)
+	}
+
+	conn, err := grpc.NewClient(*proxyAddr, dialOption)
 	if err != nil {
 		return err
 	}
