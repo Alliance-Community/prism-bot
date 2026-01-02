@@ -3,15 +3,18 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
-	"net"
+	"log/slog"
 	"os"
 
-	"github.com/emilekm/go-prbf2/prism"
-	"github.com/prbf2-tools/prism-bot/internal/bot"
-	"github.com/prbf2-tools/prism-bot/internal/bot/users"
+	base "github.com/Alliance-Community/bots-base"
+
+	"github.com/emilekm/prism-proxy/prismproxy"
+	"github.com/prbf2-tools/prism-bot/internal/bot/chat"
+	"github.com/prbf2-tools/prism-bot/internal/bot/commands"
+	"github.com/prbf2-tools/prism-bot/internal/bot/details"
 	"github.com/prbf2-tools/prism-bot/internal/config"
-	"github.com/prbf2-tools/prism-bot/internal/discord"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var configFilePath string
@@ -26,38 +29,54 @@ func main() {
 }
 
 func run(_ []string) error {
+	discordConfig, err := base.GetConfigFromEnv("PRISM_BOT")
+	if err != nil {
+		return err
+	}
+
 	conf, err := config.NewConfig(configFilePath)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Starting bot with configuration: %+v\n", conf)
+	logger := base.NewLogger(discordConfig)
 
-	client, err := prism.Dial(net.JoinHostPort(conf.PRISM.Host, conf.PRISM.Port))
+	slog.SetDefault(logger)
+
+	discordBot, err := base.NewBot(discordConfig, 0, logger)
 	if err != nil {
 		return err
 	}
 
-	defer client.Close()
-
-	err = client.Login(context.TODO(), conf.PRISM.Username, conf.PRISM.Password)
+	conn, err := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return err
 	}
+	defer conn.Close()
 
-	dBot := discord.New(&conf.Discord)
+	client := prismproxy.NewProxyClient(conn)
 
-	prismBot, err := bot.New(conf, client)
-	if err != nil {
-		return err
+	if conf.Chat != nil {
+		err = chat.NewChat(discordBot.Session(), client, conf.Chat.ChannelID).Start(context.Background())
+		if err != nil {
+			return err
+		}
 	}
 
-	prismBot.Register(dBot)
+	commands.New(client).Register(discordBot)
 
-	usersBot := users.New(client, &conf.RCONUsers, conf.Discord.GuildID)
-	usersBot.Register(dBot)
+	if conf.ServerDetails != nil {
+		details, err := details.New(conf.ServerDetails.Channels, client)
+		if err != nil {
+			return err
+		}
 
-	dBot.Run()
+		details.Register(discordBot)
+	}
 
+	discordBot.Start()
+	defer discordBot.Stop()
+
+	base.BlockExit()
 	return nil
 }
